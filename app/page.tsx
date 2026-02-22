@@ -103,15 +103,23 @@ export default function AdminDashboard() {
     }
   };
 
-  const handleRejectOrder = async (orderId: string) => {
-    if (!window.confirm("ARE YOU SURE? This will permanently delete the order.")) return;
-    const { error } = await supabase.from("orders").delete().eq("id", orderId);
-    if (!error) {
-      showToast("Order Purged", "success");
-      setOrders(orders.filter(o => o.id !== orderId));
-      setSelectedOrder(null);
-    }
-  };
+  // 🛡️ UPDATED: Changes status to 'rejected' instead of deleting
+const handleRejectOrder = async (orderId: string) => {
+  if (!window.confirm("Mark this order as REJECTED? User will see a Red Progress Bar.")) return;
+
+  const { error } = await supabase
+    .from("orders")
+    .update({ status: 'rejected' }) // 🔴 This triggers the Red Bar for the user
+    .eq("id", orderId);
+
+  if (!error) {
+    showToast("Order Rejected", "success");
+    fetchOrders(); // Refresh admin view
+    setSelectedOrder(null);
+  } else {
+    showToast("Update Failed", "error");
+  }
+};
 
   const updateOrderStatus = async (orderId: string, newStatus: string, deliveryDate: string | null = null) => {
     const safeDate = deliveryDate && deliveryDate.trim() !== "" ? deliveryDate : null;
