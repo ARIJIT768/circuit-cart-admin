@@ -15,7 +15,8 @@ interface UserData {
 
 interface OrderRequest {
   id: string; user_id: string; total: number;
-  status: 'pending' | 'confirmed' | 'shipped' | 'delivered';
+  // 🟢 ADDED 'rejected' HERE
+  status: 'pending' | 'confirmed' | 'shipped' | 'delivered' | 'rejected';
   delivery_date: string | null; created_at: string; items: any[];
   customer_info: { 
     name: string; phone: string; address: string; pincode: string; 
@@ -103,23 +104,13 @@ export default function AdminDashboard() {
     }
   };
 
-  // 🛡️ UPDATED: Changes status to 'rejected' instead of deleting
-const handleRejectOrder = async (orderId: string) => {
-  if (!window.confirm("Mark this order as REJECTED? User will see a Red Progress Bar.")) return;
-
-  const { error } = await supabase
-    .from("orders")
-    .update({ status: 'rejected' }) // 🔴 This triggers the Red Bar for the user
-    .eq("id", orderId);
-
-  if (!error) {
-    showToast("Order Rejected", "success");
-    fetchOrders(); // Refresh admin view
-    setSelectedOrder(null);
-  } else {
-    showToast("Update Failed", "error");
-  }
-};
+  // 🛡️ FIXED: Uses the authorized RPC function to bypass RLS blocks
+  const handleRejectOrder = async (orderId: string) => {
+    if (!window.confirm("Mark this order as REJECTED? User will see a Red Progress Bar.")) return;
+    
+    // We use your existing updateOrderStatus function instead of a direct update
+    await updateOrderStatus(orderId, 'rejected');
+  };
 
   const updateOrderStatus = async (orderId: string, newStatus: string, deliveryDate: string | null = null) => {
     const safeDate = deliveryDate && deliveryDate.trim() !== "" ? deliveryDate : null;
@@ -130,6 +121,8 @@ const handleRejectOrder = async (orderId: string) => {
       showToast(`Signal: ${newStatus}`, "success");
       fetchOrders();
       setSelectedOrder(null);
+    } else {
+      showToast("Update Failed", "error");
     }
   };
 
@@ -156,7 +149,7 @@ const handleRejectOrder = async (orderId: string) => {
           </div>
         </div>
 
-        {/* TAB 1: INVENTORY (RESTORED) */}
+        {/* TAB 1: INVENTORY */}
         {activeTab === 'inventory' && (
           <div className="animate-pop-in space-y-8 md:space-y-10">
             <div className="bg-[#131921] p-5 md:p-10 rounded-2xl border border-slate-800 shadow-2xl">
@@ -200,7 +193,7 @@ const handleRejectOrder = async (orderId: string) => {
           </div>
         )}
 
-        {/* TAB 2: CUSTOMERS (RESTORED) */}
+        {/* TAB 2: CUSTOMERS */}
         {activeTab === 'customers' && (
           <div className="animate-pop-in space-y-10">
             <div className="grid grid-cols-2 md:grid-cols-3 gap-6">
@@ -244,7 +237,14 @@ const handleRejectOrder = async (orderId: string) => {
                   <div key={order.id} className="bg-[#131921] border border-slate-800 rounded-2xl p-8 flex flex-col sm:flex-row justify-between items-center gap-8 shadow-xl">
                     <div className="flex-1 w-full">
                       <div className="flex items-center gap-4 mb-3">
-                        <span className={`px-4 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${order.status === 'pending' ? 'bg-red-500/10 text-red-500' : 'bg-green-500/10 text-green-500'}`}>{order.status}</span>
+                        {/* 🛡️ FIXED: Status Badge Color Logic */}
+                        <span className={`px-4 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${
+                          order.status === 'pending' ? 'bg-amber-500/10 text-amber-500' : 
+                          order.status === 'rejected' ? 'bg-red-600/20 text-red-500' : 
+                          'bg-green-500/10 text-green-500'
+                        }`}>
+                          {order.status}
+                        </span>
                         <p className="text-[10px] font-mono text-slate-500">#{order.id.slice(0, 8)}</p>
                       </div>
                       <h3 className="font-black text-xl uppercase text-white truncate">{order.customer_info.name}</h3>
