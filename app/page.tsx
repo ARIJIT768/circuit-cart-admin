@@ -1,7 +1,8 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { supabase } from "../utils/supabase";
+import { useRouter } from "next/navigation";
 
 interface InventoryItem {
   id: string; name: string; category: string; price: number;
@@ -15,7 +16,6 @@ interface UserData {
 
 interface OrderRequest {
   id: string; user_id: string; total: number;
-  // 🟢 ADDED 'rejected' HERE
   status: 'pending' | 'confirmed' | 'shipped' | 'delivered' | 'rejected';
   delivery_date: string | null; created_at: string; items: any[];
   customer_info: { 
@@ -25,6 +25,12 @@ interface OrderRequest {
 }
 
 export default function AdminDashboard() {
+  const router = useRouter();
+  
+  // 🛡️ SECURITY STATE
+  const [isAuthorized, setIsAuthorized] = useState(false);
+
+  // APP STATE
   const categories = ["microcontrollers", "components", "tools", "kits", "projects"];
   const FALLBACK_IMG = "https://placehold.co/150x150/1e293b/fbbf24?text=No+Img"; 
 
@@ -33,13 +39,50 @@ export default function AdminDashboard() {
   const [usersData, setUsersData] = useState<UserData[]>([]);
   const [orders, setOrders] = useState<OrderRequest[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isUploading, setIsUploading] = useState(false); // Tracks image upload progress
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
 
   const [selectedUser, setSelectedUser] = useState<UserData | null>(null);
   const [selectedOrder, setSelectedOrder] = useState<OrderRequest | null>(null);
-  const [form, setForm] = useState({ name: "", category: "microcontrollers", price: "", stock: "", image: "", desc: "", discount: "" });
+  
+  // 📸 NEW: Image File State
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  
+  const [form, setForm] = useState({ name: "", category: "microcontrollers", price: "", stock: "", desc: "", discount: "" });
 
+  // 🛡️ STEP 1: THE BOUNCER (Runs immediately)
   useEffect(() => {
+    const enforceSecurity = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (!session) {
+        router.push('/auth'); 
+        return;
+      }
+
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('role')
+        .eq('id', session.user.id)
+        .single();
+
+      if (profile?.role !== 'admin') {
+        await supabase.auth.signOut();
+        router.push('/auth');
+        return;
+      }
+
+      setIsAuthorized(true); // Passed checks!
+    };
+
+    enforceSecurity();
+  }, [router]);
+
+  // 📊 STEP 2: LOAD DATA (Only runs AFTER authorized)
+  useEffect(() => {
+    if (!isAuthorized) return;
+
     const savedTab = localStorage.getItem('circuit_cart_admin_tab');
     if (savedTab === 'inventory' || savedTab === 'customers' || savedTab === 'orders') {
       setActiveTab(savedTab);
@@ -50,11 +93,12 @@ export default function AdminDashboard() {
       await fetchCustomers();
       await fetchOrders();
     };
+    
     loadData();
 
     const interval = setInterval(loadData, 30000);
     return () => clearInterval(interval);
-  }, []);
+  }, [isAuthorized]);
 
   const switchTab = (tab: 'inventory' | 'customers' | 'orders') => {
     setActiveTab(tab);
@@ -82,33 +126,80 @@ export default function AdminDashboard() {
     if (data) setOrders(data as OrderRequest[]);
   }
 
+  // 📸 UPDATED: Handle Product Addition with Image Upload
   const handleAddProduct = async (e: React.FormEvent) => {
     e.preventDefault();
-    const { error } = await supabase.from("inventory").insert([{
-      ...form, price: parseFloat(form.price), stock: parseInt(form.stock)
-    }]);
+    setIsUploading(true);
+    let finalImageUrl = "";
 
-    if (!error) {
-      showToast("Inventory Updated", "success");
-      setForm({ name: "", category: "microcontrollers", price: "", stock: "", image: "", desc: "", discount: "" });
+    try {
+      // 1. Upload Image to Supabase Storage (if a file is selected)
+      if (imageFile) {
+        // Generate a unique file name
+        const fileExt = imageFile.name.split('.').pop();
+        const fileName = `${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`;
+        const filePath = `products/${fileName}`;
+
+        const { error: uploadError } = await supabase.storage
+          .from('product-images')
+          .upload(filePath, imageFile);
+
+        if (uploadError) throw new Error("Image upload failed: " + uploadError.message);
+
+        // Get the public URL for the uploaded image
+        const { data: { publicUrl } } = supabase.storage
+          .from('product-images')
+          .getPublicUrl(filePath);
+
+        finalImageUrl = publicUrl;
+      }
+
+      // 2. Insert Data into Inventory Table
+      const { error: dbError } = await supabase.from("inventory").insert([{
+        ...form, 
+        price: parseFloat(form.price), 
+        stock: parseInt(form.stock),
+        image: finalImageUrl // Save the Supabase Bucket URL
+      }]);
+
+      if (dbError) throw new Error("Database error: " + dbError.message);
+
+      // 3. Reset form on success
+      showToast("Component Registered Successfully", "success");
+      setForm({ name: "", category: "microcontrollers", price: "", stock: "", desc: "", discount: "" });
+      setImageFile(null);
+      if (fileInputRef.current) fileInputRef.current.value = ""; // Reset file input UI
       fetchInventory();
+
+    } catch (err: any) {
+      showToast(err.message || "Failed to add component", "error");
+    } finally {
+      setIsUploading(false);
     }
   };
 
-  const handleDeleteInventory = async (id: string) => {
+  const handleDeleteInventory = async (id: string, imageUrl: string) => {
     if (!window.confirm("Scrap this component?")) return;
+    
+    // Delete from database
     const { error } = await supabase.from("inventory").delete().eq("id", id);
+    
     if (!error) {
       setInventory(inventory.filter((item) => item.id !== id));
       showToast("Component Scrapped", "success");
+
+      // Optional: Delete the image from the bucket to save space
+      if (imageUrl && imageUrl.includes('supabase.co/storage/v1/object/public/product-images/')) {
+        const filePath = imageUrl.split('product-images/')[1];
+        if (filePath) {
+          await supabase.storage.from('product-images').remove([filePath]);
+        }
+      }
     }
   };
 
-  // 🛡️ FIXED: Uses the authorized RPC function to bypass RLS blocks
   const handleRejectOrder = async (orderId: string) => {
     if (!window.confirm("Mark this order as REJECTED? User will see a Red Progress Bar.")) return;
-    
-    // We use your existing updateOrderStatus function instead of a direct update
     await updateOrderStatus(orderId, 'rejected');
   };
 
@@ -125,6 +216,11 @@ export default function AdminDashboard() {
       showToast("Update Failed", "error");
     }
   };
+
+  // 🛑 BLOCK RENDER UNTIL AUTHORIZED
+  if (!isAuthorized) {
+    return <div className="min-h-screen bg-[#020617] flex items-center justify-center text-red-500 font-bold tracking-widest animate-pulse">VERIFYING CLEARANCE...</div>;
+  }
 
   return (
     <div className="min-h-screen bg-[#020617] text-slate-100 p-4 md:p-10 font-sans pb-32">
@@ -163,9 +259,23 @@ export default function AdminDashboard() {
                    <input type="number" required value={form.price} onChange={e => setForm({...form, price: e.target.value})} className="p-4 rounded-xl bg-[#020617] border border-slate-700 outline-none text-sm" placeholder="Price (₹)" />
                    <input type="number" required value={form.stock} onChange={e => setForm({...form, stock: e.target.value})} className="p-4 rounded-xl bg-[#020617] border border-slate-700 outline-none text-sm" placeholder="Stock" />
                 </div>
-                <input type="text" value={form.image} onChange={e => setForm({...form, image: e.target.value})} className="p-4 rounded-xl bg-[#020617] border border-slate-700 outline-none text-sm" placeholder="Image URL" />
+                
+                {/* 📸 NEW: Image File Uploader */}
+                <div className="flex flex-col justify-center">
+                  <input 
+                    type="file" 
+                    accept="image/*" 
+                    ref={fileInputRef}
+                    onChange={e => setImageFile(e.target.files ? e.target.files[0] : null)} 
+                    className="p-3 rounded-xl bg-[#020617] border border-slate-700 outline-none text-sm text-slate-400 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-amber-500 file:text-slate-900 hover:file:bg-amber-400 cursor-pointer" 
+                  />
+                </div>
+
                 <textarea value={form.desc} onChange={e => setForm({...form, desc: e.target.value})} className="md:col-span-2 p-4 rounded-xl bg-[#020617] border border-slate-700 outline-none h-24 text-sm" placeholder="Description" />
-                <button type="submit" className="md:col-span-2 w-full bg-amber-500 hover:bg-amber-600 text-slate-900 font-black py-4 rounded-xl uppercase tracking-widest text-xs transition-transform active:scale-95">Push to Database</button>
+                
+                <button type="submit" disabled={isUploading} className="md:col-span-2 w-full bg-amber-500 hover:bg-amber-600 disabled:bg-amber-500/50 disabled:cursor-not-allowed text-slate-900 font-black py-4 rounded-xl uppercase tracking-widest text-xs transition-transform active:scale-95 flex justify-center items-center gap-2">
+                  {isUploading ? <><i className="fas fa-circle-notch fa-spin text-lg"></i> UPLOADING...</> : 'Push to Database'}
+                </button>
               </form>
             </div>
             
@@ -183,7 +293,7 @@ export default function AdminDashboard() {
                             <span className="font-bold text-sm">{item.name}</span>
                           </td>
                           <td className="p-6 text-xs text-slate-400">Stock: <span className="text-white font-bold">{item.stock}</span> | ₹{item.price}</td>
-                          <td className="p-6 text-right"><button onClick={() => handleDeleteInventory(item.id)} className="text-red-500 font-bold text-[10px] uppercase bg-red-500/10 px-3 py-2 rounded-lg">Scrap</button></td>
+                          <td className="p-6 text-right"><button onClick={() => handleDeleteInventory(item.id, item.image)} className="text-red-500 font-bold text-[10px] uppercase bg-red-500/10 px-3 py-2 rounded-lg">Scrap</button></td>
                         </tr>
                       ))}
                     </tbody>
@@ -237,7 +347,6 @@ export default function AdminDashboard() {
                   <div key={order.id} className="bg-[#131921] border border-slate-800 rounded-2xl p-8 flex flex-col sm:flex-row justify-between items-center gap-8 shadow-xl">
                     <div className="flex-1 w-full">
                       <div className="flex items-center gap-4 mb-3">
-                        {/* 🛡️ FIXED: Status Badge Color Logic */}
                         <span className={`px-4 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${
                           order.status === 'pending' ? 'bg-amber-500/10 text-amber-500' : 
                           order.status === 'rejected' ? 'bg-red-600/20 text-red-500' : 
@@ -312,7 +421,7 @@ export default function AdminDashboard() {
                       <div className="relative aspect-video w-full overflow-hidden rounded-xl border border-slate-800 bg-black group">
                         <img src={selectedOrder.customer_info.receipt_url} className="w-full h-full object-contain" />
                         <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                           <a href={selectedOrder.customer_info.receipt_url} target="_blank" className="bg-white text-black px-4 py-2 rounded-lg font-bold text-xs uppercase shadow-xl">Full Resolution</a>
+                           <a href={selectedOrder.customer_info.receipt_url} target="_blank" rel="noreferrer" className="bg-white text-black px-4 py-2 rounded-lg font-bold text-xs uppercase shadow-xl">Full Resolution</a>
                         </div>
                       </div>
                       <div className="bg-[#020617] p-3 rounded-lg border border-slate-800 text-center"><p className="text-[10px] font-bold text-slate-500 uppercase mb-1">Stated UTR</p><p className="font-mono text-sm text-white tracking-widest">{selectedOrder.customer_info.utr}</p></div>

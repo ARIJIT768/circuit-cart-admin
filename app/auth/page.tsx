@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from 'react';
-import { supabase } from '../../utils/supabase'; // Ensure this path is correct for your admin app
+import { supabase } from '../../utils/supabase'; 
 import { useRouter } from 'next/navigation';
 
 export default function AdminAuthPage() {
@@ -43,7 +43,7 @@ export default function AdminAuthPage() {
         
         if (isAdmin) {
           setSuccessMsg('Clearance Verified! Redirecting to Central Control...');
-          setTimeout(() => { window.location.href = '/admin/dashboard'; }, 600);
+          setTimeout(() => { router.push('/'); }, 600); // Redirects to your main dashboard
         } else {
           setLoading(false);
         }
@@ -53,7 +53,7 @@ export default function AdminAuthPage() {
     return () => {
       authListener.subscription.unsubscribe();
     };
-  }, []);
+  }, [router]);
 
   // ⏱️ Timer countdown logic
   useEffect(() => {
@@ -85,7 +85,7 @@ export default function AdminAuthPage() {
       const { error } = await supabase.auth.signInWithOtp({ 
         email: cleanEmail,
         options: {
-          shouldCreateUser: false, // Prevents creating new users from the admin panel
+          shouldCreateUser: false, 
         }
       });
       
@@ -131,12 +131,11 @@ export default function AdminAuthPage() {
 
       if (error) throw error;
 
-      // Ensure the user actually has admin rights before redirecting
       if (data.user) {
         const isAdmin = await verifyAdminClearance(data.user.id);
         if (isAdmin) {
           setSuccessMsg('Clearance Verified! Accessing Central Control...');
-          setTimeout(() => { window.location.href = '/admin/dashboard'; }, 1000);
+          setTimeout(() => { router.push('/'); }, 1000); // Redirects to your main dashboard
         }
       }
     } catch (err: any) {
@@ -157,7 +156,6 @@ export default function AdminAuthPage() {
 
       <div className="max-w-md w-full bg-[#131921] p-8 md:p-10 rounded-2xl border border-slate-800 shadow-2xl animate-pop-in relative overflow-hidden">
         
-        {/* Changed top accent bar to red for Admin styling */}
         <div className="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-1 bg-red-600 shadow-[0_0_20px_rgba(220,38,38,0.5)]"></div>
 
         <h2 className="text-2xl font-black text-white mb-2 tracking-wide uppercase text-center">
